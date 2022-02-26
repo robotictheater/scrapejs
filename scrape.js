@@ -4,25 +4,62 @@ const puppeteer = require('puppeteer');
 
 
 module.exports={
-    load:{
-        html:(filePath)=>{
-            return fs.readFileSync(process.cwd()+filePath,{encoding:'utf8', flag:'r'});
+    file:(filePath)=>{
+        return fs.readFileSync(process.cwd()+filePath,{encoding:'utf8', flag:'r'});
+    },
+    browser:{
+        obj:null,
+        page:null,
+        open:async function(){
+            this.obj = await puppeteer.launch();
+            this.page = await this.obj.newPage();
+            this.page.setDefaultNavigationTimeout(60000);
         },
-        page:async(url, params)=>{
-            let browser = await puppeteer.launch(),
-            page = await browser.newPage();
-            page.setDefaultNavigationTimeout(60000);
-            
-            await page.goto(url,{"waitUntil" : ((params && params.waitUntil) ? params.waitUntil : ["load"])}); //"load"|"domcontentloaded"|"networkidle0"|"networkidle2"
+        load:async function(url, params){
+            await this.page.goto(url,{"waitUntil" : ((params && params.waitUntil) ? params.waitUntil : ["load"])}); //"load"|"domcontentloaded"|"networkidle0"|"networkidle2"
 
             if(params && params.waitForFunction){
-                await page.waitForFunction(params.waitForFunction); //'document.querySelector("#wpsl-stores").innerHTML.length>0'
+                await this.page.waitForFunction(params.waitForFunction);
             }
-            let output = await page.content();
-            await browser.close();
-            return output
+            return await this.page.content();
+        },
+        exists:async function(url, params){
+            if(!params){ params={}; }           
+
+            if(!params.options){ params.options=[""]; }
+            let dataToReturn = ((params.options.length===1) ? "" : [false,url]);
+
+            for(let optionPage of params.options){
+                try{
+                    let response = await this.page.goto(url+optionPage,{"waitUntil" : ((params && params.waitUntil) ? params.waitUntil : ["load"])}) //"load"|"domcontentloaded"|"networkidle0"|"networkidle2"
+                    if(response.status()===200){
+                        if(params.options.length===1){
+                            dataToReturn = url+optionPage;
+                        }else{
+                            dataToReturn = [true, url+optionPage];
+                        }                        
+                        break;
+                    }
+                }catch(e){ }
+            }
+
+            return dataToReturn;             
+        },
+
+        click:async function(el){
+            
+
+            console.log("clicking", await this.page.click(el));
+            await this.page.waitForSelector("#p_lt_ctl07_pageplaceholder_p_lt_ctl05_AttendeeDirectory__grdResults");
+            return await this.page.content();
+            
+        },
+
+        close:async function(){
+            await this.obj.close();
         }
-    },
+
+    },  
     extract:{
         /*---------------------------------------
             LIST
@@ -59,27 +96,52 @@ module.exports={
             });
             return output;
         },
-
         htmlToObject:(params, data)=>{
             let output=[];
             if(typeof data==="string"){ data=[data]; }
-
             data.forEach((d,i)=>{
                 const $ = cheerio.load(d);
                 let row={};
                 params.selectors.forEach(selector=>{
                                     
                     switch(selector.type){
+                        case "static":
+                            row[selector.field]=selector.value;
+                        break;
                         case "text":
                             if($(selector.selector).length>1){
                                 let content=[];
                                 $(selector.selector).each((i, c)=>{
-                                    content.push($(c).text().trim());
-                                });
 
-                                row[selector.field]=content;
+                                    if(selector.condition){
+                                        if(selector.condition.test($(c).text().trim())){
+                                            content.push($(c).text().trim());
+                                        }
+                                    }else{
+                                        content.push($(c).text().trim());
+                                    }
+
+                                    
+                                });
+                               
+                                row[selector.field]=((typeof selector.element==="number") ? content[selector.element] : content);
+                                
+
+                                
                             }else if($(selector.selector).length===1){
-                                row[selector.field]=$(selector.selector).text().trim();
+
+                                if(selector.condition){
+                                    if(selector.condition.test($(selector.selector).text().trim())){
+                                        row[selector.field]=$(selector.selector).text().trim();
+                                    }else if(selector.allow_empty){
+                                        row[selector.field]="";
+                                    }   
+                                }else{
+                                    row[selector.field]=$(selector.selector).text().trim();
+                                }
+                                
+                            }else if(selector.allow_empty){
+                                row[selector.field]="";
                             }                        
                         break;
         
@@ -88,13 +150,32 @@ module.exports={
                             if($(selector.selector).length>1){
                                 let content=[];
                                 $(selector.selector).each((i, c)=>{
-                                    content.push($(c).attr(selector.attr).trim());
-                                });
-
+                                    if(selector.condition){
+                                        if(selector.condition.test($(c).attr(selector.attr).trim())){
+                                            content.push($(c).attr(selector.attr).trim());
+                                        }else if(selector.allow_empty){
+                                            row[selector.field]="";
+                                        }   
+                                    }else{
+                                        content.push($(c).attr(selector.attr).trim());
+                                    }
+                                    
+                                });                                
                                 row[selector.field]=content;
                             }else if($(selector.selector).length===1){
-                                row[selector.field]=$(selector.selector).attr(selector.attr).trim();
-                            }                            
+                                if(selector.condition){
+                                    if(selector.condition.test($(selector.selector).attr(selector.attr).trim())){
+                                        row[selector.field]=$(selector.selector).attr(selector.attr).trim();
+                                    }else if(selector.allow_empty){
+                                        row[selector.field]="";
+                                    }   
+                                }else{
+                                    row[selector.field]=$(selector.selector).attr(selector.attr).trim();
+                                }
+                                
+                            }else if(selector.allow_empty){
+                                row[selector.field]="";
+                            }                              
                         break;
                        
 
@@ -192,6 +273,32 @@ module.exports={
             });
 
             return result;
+        },
+        tableToObjects:(params, data)=>{
+            const $ = cheerio.load(data);
+            let tableData=[];
+            
+            $(params.selector).each(function(r, row){
+                let rowData={};
+                params.cols.forEach((col,c)=>{
+
+                    switch(col.type){
+                        case "html":
+                            rowData[col.key] = $(row).find(`td:eq(${c})`).html();                            
+                        break;
+                        default:
+                            rowData[col.key] = $(row).find(`td:eq(${c})`).text();
+                        break;
+                    }                    
+                    if(rowData[col.key]){
+                        rowData[col.key] = rowData[col.key].trim();
+                    }
+
+                });
+                tableData.push(rowData);
+            });
+
+            return tableData;
         }
     },
     render:{
@@ -255,6 +362,7 @@ module.exports={
                     break;
                 }
             };
+          
     
             data.forEach((d,i)=>{
                 params.forEach(transform=>{ 
@@ -276,17 +384,35 @@ module.exports={
                             data[i][transform.field] = cheerio.load(data[i][transform.field]).text();                         
                         break;
                         case "stringToFields":
-                            let parts = data[i][transform.field].split(transform.separator);
-                            if(transform.map.length>0){
-                                transform.map.forEach((mapItem, mapIndex)=>{
-                                    data[i][mapItem]=((parts[mapIndex]) ? parts[mapIndex].trim() : null);
-                                });
-                            }else{
-                                let map=((transform.map[parts.length]) ? transform.map[parts.length] : []);
-                                map.forEach((mapItem, mapIndex)=>{
-                                    data[i][mapItem]=((parts[mapIndex]) ? parts[mapIndex].trim() : null);
-                                });
-                            }                        
+                            try{
+                                if(typeof data[i][transform.field]==="string"){
+
+                                    if(typeof transform.separator==="object"){
+                                        transform.separator.some((sep)=>{
+                                            if(data[i][transform.field].indexOf(sep)>=0){
+                                                transform.separator=sep;
+                                                return true;
+                                            }
+                                        })
+                                    }
+
+                                    let parts = data[i][transform.field].split(transform.separator);
+                                    if(transform.map.length>0){
+                                        transform.map.forEach((mapItem, mapIndex)=>{
+                                            data[i][mapItem]=((parts[mapIndex]) ? parts[mapIndex].trim() : null);
+                                        });
+                                    }else{
+                                        let map=((transform.map[parts.length]) ? transform.map[parts.length] : []);
+                                        map.forEach((mapItem, mapIndex)=>{
+                                            data[i][mapItem]=((parts[mapIndex]) ? parts[mapIndex].trim() : null);
+                                        });
+                                    }      
+                                }
+                            }catch(e){
+                                console.log(e);
+                                console.log(data[i][transform.field]);
+                            }
+                                             
                         break;
                         case "stringToAddress":
                             data[i][transform.field].split(transform.separator).forEach(part=>{
@@ -331,7 +457,11 @@ module.exports={
                             });
                         break;
                         case "replace":
-                            data[i][transform.field] = data[i][transform.field].replace(transform.search, transform.replace);
+                            if(typeof data[i][transform.field]!=="undefined"){
+                                data[i][transform.field] = data[i][transform.field].replace(transform.search, transform.replace).trim();
+                            }else{
+                                data[i][transform.field]="";
+                            }                            
                         break;
                         case "function":                                         
                             require(transform.file)(data, i);
@@ -343,3 +473,4 @@ module.exports={
         }
     }
 };
+
