@@ -340,6 +340,14 @@ module.exports={
             
             fs.writeFileSync(process.cwd()+file, output);
         },
+        arrayToCSV:(file, data)=>{
+            let output="";
+            data.forEach(d=>{
+                output+=`"`+d.join(`","`)+`"\n`
+            });            
+            
+            fs.writeFileSync(process.cwd()+file, output);
+        },
         toText:(file, data)=>{
             fs.writeFileSync(process.cwd()+file, data);
         }
